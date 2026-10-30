@@ -1,0 +1,40 @@
+DECLARE @Table SYSNAME = N'dbo.YourTable';   -- e.g. N'dbo.YourTable', or NULL for all tables
+ 
+SELECT
+    OBJECT_SCHEMA_NAME(i.object_id) + '.' + OBJECT_NAME(i.object_id) AS table_name,
+    i.name                                   AS index_name,
+    i.type_desc                              AS index_type,
+    ISNULL(us.user_seeks, 0)                 AS seeks,
+    ISNULL(us.user_scans, 0)                 AS scans,
+    ISNULL(us.user_lookups, 0)               AS lookups,
+    ISNULL(us.user_seeks + us.user_scans + us.user_lookups, 0) AS total_reads,
+    ISNULL(us.user_updates, 0)               AS writes,
+    us.last_user_seek,
+    us.last_user_scan,
+    us.last_user_update,
+    sz.size_mb,
+    CASE
+        WHEN i.is_primary_key = 1 OR i.is_unique_constraint = 1 THEN 'Constraint - keep'
+        WHEN ISNULL(us.user_seeks + us.user_scans + us.user_lookups, 0) = 0
+             AND ISNULL(us.user_updates, 0) > 0                 THEN 'Unused - writes only'
+        WHEN ISNULL(us.user_seeks + us.user_scans + us.user_lookups, 0) = 0 THEN 'Unused'
+        WHEN us.user_updates > (us.user_seeks + us.user_scans + us.user_lookups) * 10
+                                                                THEN 'Write-heavy - review'
+        ELSE 'In use'
+    END                                      AS assessment
+FROM sys.indexes i
+LEFT JOIN sys.dm_db_index_usage_stats us
+       ON us.object_id = i.object_id
+      AND us.index_id  = i.index_id
+      AND us.database_id = DB_ID()
+OUTER APPLY (
+    SELECT CAST(SUM(ps.used_page_count) * 8 / 1024.0 AS DECIMAL(12,2)) AS size_mb
+    FROM sys.dm_db_partition_stats ps
+    WHERE ps.object_id = i.object_id AND ps.index_id = i.index_id
+) sz
+WHERE OBJECTPROPERTY(i.object_id, 'IsUserTable') = 1
+  AND i.index_id > 0
+  AND (@Table IS NULL OR i.object_id = OBJECT_ID(@Table))
+ORDER BY table_name, total_reads DESC;
+
+
